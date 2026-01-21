@@ -40,8 +40,8 @@ async function bootstrap() {
   const port = process.env.PORT || 3002;
   await app.listen(port, '0.0.0.0'); // Listen on all interfaces for deployment
   
-  console.log(`🚀 Video Downloader Backend is running on: http://localhost:${port}/api`);
-  console.log(`📊 Health check available at: http://localhost:${port}/api/health`);
+  console.log(`🚀 Video Downloader Backend is running on: http://0.0.0.0:${port}/api`);
+  console.log(`📊 Health check available at: http://0.0.0.0:${port}/api/health`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 CORS enabled for: ${corsOrigins.join(', ')}`);
 }
