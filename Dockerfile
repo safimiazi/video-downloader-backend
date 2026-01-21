@@ -1,5 +1,5 @@
-# Use Node.js 18 LTS (Render compatible)
-FROM node:18-slim
+# Use Node.js 20 LTS (Required for NestJS v11)
+FROM node:20-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -21,8 +21,8 @@ WORKDIR /app
 # Copy package files first (for better Docker layer caching)
 COPY package*.json ./
 
-# Install ALL dependencies (dev + prod) for build
-RUN npm ci && npm cache clean --force
+# Install dependencies and update lock file
+RUN npm install && npm cache clean --force
 
 # Copy source code
 COPY . .
