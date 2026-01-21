@@ -9,8 +9,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp globally
-RUN pip3 install --break-system-packages yt-dlp
+# Install yt-dlp globally (latest version)
+RUN pip3 install --break-system-packages --upgrade yt-dlp
+
+# Update yt-dlp to latest version
+RUN yt-dlp -U || echo "yt-dlp update attempted"
 
 # Verify yt-dlp installation
 RUN yt-dlp --version

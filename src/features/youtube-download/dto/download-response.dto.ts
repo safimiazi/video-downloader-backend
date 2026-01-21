@@ -40,7 +40,7 @@ export class DownloadErrorResponseDto {
  * Used during progressive downloads to send real-time updates
  */
 export class ProgressUpdateDto {
-  type: 'start' | 'progress' | 'processing' | 'complete' | 'error';
+  type: 'start' | 'progress' | 'processing' | 'complete' | 'error' | 'info';
   progress?: number;
   message: string;
   downloadedSize?: number;

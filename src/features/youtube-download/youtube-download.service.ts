@@ -144,28 +144,30 @@ export class YoutubeDownloadService {
    * @private
    */
   private buildDownloadCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
-    // Enhanced options to avoid bot detection
+    // Enhanced options to avoid bot detection with multiple fallback strategies
     const baseOptions = [
       '--no-check-certificate',
-      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
+      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"',
       '--referer "https://www.youtube.com/"',
       '--add-header "Accept-Language:en-US,en;q=0.9"',
       '--add-header "Accept-Encoding:gzip, deflate, br"',
       '--add-header "DNT:1"',
       '--add-header "Connection:keep-alive"',
       '--add-header "Upgrade-Insecure-Requests:1"',
-      '--extractor-retries 3',
-      '--fragment-retries 3',
-      '--retry-sleep 1',
+      '--extractor-retries 5',
+      '--fragment-retries 5',
+      '--retry-sleep 2',
+      '--socket-timeout 30',
+      '--extractor-args "youtube:player_client=web,mweb"',
       '--no-warnings'
     ].join(' ');
     
     if (audioOnly) {
       // Audio-only download as MP3
-      return `yt-dlp ${baseOptions} -f "bestaudio" --extract-audio --audio-format mp3 --audio-quality 0 -o "${tempFile}.%(ext)s" "${url}"`;
+      return `yt-dlp ${baseOptions} -f "bestaudio/best" --extract-audio --audio-format mp3 --audio-quality 0 -o "${tempFile}.%(ext)s" "${url}"`;
     } else {
       // Video download with audio, merged to MP4
-      return `yt-dlp ${baseOptions} -f "bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${quality}]" --merge-output-format mp4 -o "${tempFile}.%(ext)s" "${url}"`;
+      return `yt-dlp ${baseOptions} -f "bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]" --merge-output-format mp4 -o "${tempFile}.%(ext)s" "${url}"`;
     }
   }
 
@@ -176,33 +178,62 @@ export class YoutubeDownloadService {
    */
   private async getFallbackUrls(url: string, quality: string, audioOnly: boolean): Promise<DownloadFallbackResponseDto> {
     const format = audioOnly 
-      ? 'bestaudio' 
+      ? 'bestaudio/best' 
       : `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]`;
 
-    // Enhanced options for fallback URL extraction
+    // Enhanced options for fallback URL extraction with multiple strategies
     const baseOptions = [
       '--no-check-certificate',
-      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
+      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"',
       '--referer "https://www.youtube.com/"',
       '--add-header "Accept-Language:en-US,en;q=0.9"',
-      '--extractor-retries 3',
-      '--retry-sleep 1',
+      '--extractor-retries 5',
+      '--retry-sleep 2',
+      '--socket-timeout 30',
+      '--extractor-args "youtube:player_client=web,mweb"',
       '--no-warnings'
     ].join(' ');
 
-    const { stdout } = await execAsync(
-      `yt-dlp ${baseOptions} --get-url -f "${format}" "${url}"`
-    );
-    
-    const urls = stdout.trim().split('\n').filter(url => url.length > 0);
+    try {
+      const { stdout } = await execAsync(
+        `yt-dlp ${baseOptions} --get-url -f "${format}" "${url}"`
+      );
+      
+      const urls = stdout.trim().split('\n').filter(url => url.length > 0);
 
-    return {
-      success: true,
-      directDownload: false,
-      urls: urls,
-      message: 'Direct download not available, use these URLs',
-      instruction: audioOnly ? 'Audio URL' : 'Video URLs (may need merging)'
-    };
+      return {
+        success: true,
+        directDownload: false,
+        urls: urls,
+        message: 'Direct download not available, use these URLs',
+        instruction: audioOnly ? 'Audio URL' : 'Video URLs (may need merging)'
+      };
+    } catch (fallbackError) {
+      // If primary method fails, try with different player client
+      try {
+        const alternativeOptions = [
+          '--no-check-certificate',
+          '--extractor-args "youtube:player_client=android"',
+          '--no-warnings'
+        ].join(' ');
+
+        const { stdout } = await execAsync(
+          `yt-dlp ${alternativeOptions} --get-url -f "${format}" "${url}"`
+        );
+        
+        const urls = stdout.trim().split('\n').filter(url => url.length > 0);
+
+        return {
+          success: true,
+          directDownload: false,
+          urls: urls,
+          message: 'Fallback URLs extracted using alternative method',
+          instruction: audioOnly ? 'Audio URL (Android client)' : 'Video URLs (Android client)'
+        };
+      } catch (secondaryError) {
+        throw new Error(`All fallback methods failed: ${fallbackError.message}`);
+      }
+    }
   }
 
   /**
@@ -221,10 +252,39 @@ export class YoutubeDownloadService {
     const uniqueId = uuidv4().substring(0, 8);
     const tempFile = join(tmpdir(), `video_${timestamp}_${uniqueId}`);
     
-    // Build command with progress output
-    const command = this.buildProgressCommand(url, quality, audioOnly, tempFile);
+    // Try primary method first
+    this.attemptProgressiveDownload(controller, encoder, url, quality, audioOnly, tempFile, 'primary');
+  }
+
+  /**
+   * Attempt progressive download with fallback strategies
+   * 
+   * @private
+   */
+  private attemptProgressiveDownload(
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    encoder: TextEncoder,
+    url: string,
+    quality: string,
+    audioOnly: boolean,
+    tempFile: string,
+    strategy: 'primary' | 'android' | 'ios'
+  ): void {
+    // Build command based on strategy
+    let command: string;
     
-    this.logger.log(`Starting progressive download: ${command}`);
+    switch (strategy) {
+      case 'android':
+        command = this.buildAndroidProgressCommand(url, quality, audioOnly, tempFile);
+        break;
+      case 'ios':
+        command = this.buildIOSProgressCommand(url, quality, audioOnly, tempFile);
+        break;
+      default:
+        command = this.buildProgressCommand(url, quality, audioOnly, tempFile);
+    }
+    
+    this.logger.log(`Starting progressive download (${strategy}): ${command}`);
 
     const child = exec(command, { timeout: 300000 }); // 5 minutes timeout
     let controllerClosed = false;
@@ -245,7 +305,7 @@ export class YoutubeDownloadService {
     // Send initial progress update
     safeEnqueue({
       type: 'start',
-      message: 'Starting download...',
+      message: `Starting download (${strategy} method)...`,
       progress: 0
     });
 
@@ -258,14 +318,40 @@ export class YoutubeDownloadService {
     // Handle stderr for error detection
     child.stderr?.on('data', (data) => {
       const errorOutput = data.toString();
-      this.logger.warn(`yt-dlp stderr: ${errorOutput}`);
+      this.logger.warn(`yt-dlp stderr (${strategy}): ${errorOutput}`);
       
       // Only send error if it's a critical error
       if (errorOutput.toLowerCase().includes('error') && !errorOutput.includes('warning')) {
-        safeEnqueue({
-          type: 'error',
-          message: `Download error: ${errorOutput.substring(0, 100)}`
-        });
+        // If primary method fails, try fallback
+        if (strategy === 'primary') {
+          this.logger.log('Primary method failed, trying Android client...');
+          safeEnqueue({
+            type: 'info',
+            message: 'Trying alternative method...'
+          });
+          
+          // Kill current process and try Android method
+          child.kill();
+          this.attemptProgressiveDownload(controller, encoder, url, quality, audioOnly, tempFile, 'android');
+          return;
+        } else if (strategy === 'android') {
+          this.logger.log('Android method failed, trying iOS client...');
+          safeEnqueue({
+            type: 'info',
+            message: 'Trying final alternative method...'
+          });
+          
+          // Kill current process and try iOS method
+          child.kill();
+          this.attemptProgressiveDownload(controller, encoder, url, quality, audioOnly, tempFile, 'ios');
+          return;
+        } else {
+          // All methods failed
+          safeEnqueue({
+            type: 'error',
+            message: `All download methods failed: ${errorOutput.substring(0, 100)}`
+          });
+        }
       }
     });
 
@@ -277,10 +363,31 @@ export class YoutubeDownloadService {
 
     // Handle process errors
     child.on('error', (processError) => {
-      this.logger.error(`Process error: ${processError.message}`);
+      this.logger.error(`Process error (${strategy}): ${processError.message}`);
+      
+      // Try fallback if primary method fails
+      if (strategy === 'primary') {
+        this.logger.log('Process error in primary method, trying Android client...');
+        safeEnqueue({
+          type: 'info',
+          message: 'Connection failed, trying alternative method...'
+        });
+        this.attemptProgressiveDownload(controller, encoder, url, quality, audioOnly, tempFile, 'android');
+        return;
+      } else if (strategy === 'android') {
+        this.logger.log('Process error in Android method, trying iOS client...');
+        safeEnqueue({
+          type: 'info',
+          message: 'Trying final alternative method...'
+        });
+        this.attemptProgressiveDownload(controller, encoder, url, quality, audioOnly, tempFile, 'ios');
+        return;
+      }
+      
+      // All methods failed
       safeEnqueue({
         type: 'error',
-        message: `Process failed: ${processError.message}`
+        message: `All download methods failed: ${processError.message}`
       });
       
       if (!controllerClosed) {
@@ -295,33 +402,77 @@ export class YoutubeDownloadService {
   }
 
   /**
-   * Build yt-dlp command for progressive download with progress output
+   * Build Android client command for progressive download
    * 
    * @private
    */
-  private buildProgressCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
-    // Enhanced options to avoid bot detection with progress output
+  private buildAndroidProgressCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
     const baseOptions = [
       '--no-check-certificate',
-      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
-      '--referer "https://www.youtube.com/"',
-      '--add-header "Accept-Language:en-US,en;q=0.9"',
-      '--add-header "Accept-Encoding:gzip, deflate, br"',
-      '--add-header "DNT:1"',
-      '--add-header "Connection:keep-alive"',
-      '--add-header "Upgrade-Insecure-Requests:1"',
-      '--extractor-retries 3',
-      '--fragment-retries 3',
-      '--retry-sleep 1',
+      '--extractor-args "youtube:player_client=android"',
       '--progress',
       '--newline',
       '--no-warnings'
     ].join(' ');
     
     if (audioOnly) {
-      return `yt-dlp ${baseOptions} -f "bestaudio" --extract-audio --audio-format mp3 --audio-quality 0 -o "${tempFile}.%(ext)s" "${url}"`;
+      return `yt-dlp ${baseOptions} -f "bestaudio/best" --extract-audio --audio-format mp3 --audio-quality 0 -o "${tempFile}.%(ext)s" "${url}"`;
     } else {
-      return `yt-dlp ${baseOptions} -f "bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${quality}]" --merge-output-format mp4 -o "${tempFile}.%(ext)s" "${url}"`;
+      return `yt-dlp ${baseOptions} -f "bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]" --merge-output-format mp4 -o "${tempFile}.%(ext)s" "${url}"`;
+    }
+  }
+
+  /**
+   * Build iOS client command for progressive download
+   * 
+   * @private
+   */
+  private buildIOSProgressCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
+    const baseOptions = [
+      '--no-check-certificate',
+      '--extractor-args "youtube:player_client=ios"',
+      '--progress',
+      '--newline',
+      '--no-warnings'
+    ].join(' ');
+    
+    if (audioOnly) {
+      return `yt-dlp ${baseOptions} -f "bestaudio/best" --extract-audio --audio-format mp3 --audio-quality 0 -o "${tempFile}.%(ext)s" "${url}"`;
+    } else {
+      return `yt-dlp ${baseOptions} -f "bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]" --merge-output-format mp4 -o "${tempFile}.%(ext)s" "${url}"`;
+    }
+  }
+
+  /**
+   * Build yt-dlp command for progressive download with progress output
+   * 
+   * @private
+   */
+  private buildProgressCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
+    // Enhanced options to avoid bot detection with progress output and multiple fallback strategies
+    const baseOptions = [
+      '--no-check-certificate',
+      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"',
+      '--referer "https://www.youtube.com/"',
+      '--add-header "Accept-Language:en-US,en;q=0.9"',
+      '--add-header "Accept-Encoding:gzip, deflate, br"',
+      '--add-header "DNT:1"',
+      '--add-header "Connection:keep-alive"',
+      '--add-header "Upgrade-Insecure-Requests:1"',
+      '--extractor-retries 5',
+      '--fragment-retries 5',
+      '--retry-sleep 2',
+      '--socket-timeout 30',
+      '--extractor-args "youtube:player_client=web,mweb"',
+      '--progress',
+      '--newline',
+      '--no-warnings'
+    ].join(' ');
+    
+    if (audioOnly) {
+      return `yt-dlp ${baseOptions} -f "bestaudio/best" --extract-audio --audio-format mp3 --audio-quality 0 -o "${tempFile}.%(ext)s" "${url}"`;
+    } else {
+      return `yt-dlp ${baseOptions} -f "bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]" --merge-output-format mp4 -o "${tempFile}.%(ext)s" "${url}"`;
     }
   }
 
