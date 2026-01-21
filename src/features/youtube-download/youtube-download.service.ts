@@ -66,7 +66,7 @@ export class YoutubeDownloadService {
       this.logger.log(`Executing command: ${command}`);
 
       // Execute download with timeout
-      const { stdout, stderr } = await execAsync(command, {
+      const { stderr } = await execAsync(command, {
         timeout: 120000 // 2 minutes timeout for direct downloads
       });
 
@@ -144,7 +144,21 @@ export class YoutubeDownloadService {
    * @private
    */
   private buildDownloadCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
-    const baseOptions = '--no-check-certificate --remote-components ejs:github';
+    // Enhanced options to avoid bot detection
+    const baseOptions = [
+      '--no-check-certificate',
+      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
+      '--referer "https://www.youtube.com/"',
+      '--add-header "Accept-Language:en-US,en;q=0.9"',
+      '--add-header "Accept-Encoding:gzip, deflate, br"',
+      '--add-header "DNT:1"',
+      '--add-header "Connection:keep-alive"',
+      '--add-header "Upgrade-Insecure-Requests:1"',
+      '--extractor-retries 3',
+      '--fragment-retries 3',
+      '--retry-sleep 1',
+      '--no-warnings'
+    ].join(' ');
     
     if (audioOnly) {
       // Audio-only download as MP3
@@ -165,8 +179,19 @@ export class YoutubeDownloadService {
       ? 'bestaudio' 
       : `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]`;
 
+    // Enhanced options for fallback URL extraction
+    const baseOptions = [
+      '--no-check-certificate',
+      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
+      '--referer "https://www.youtube.com/"',
+      '--add-header "Accept-Language:en-US,en;q=0.9"',
+      '--extractor-retries 3',
+      '--retry-sleep 1',
+      '--no-warnings'
+    ].join(' ');
+
     const { stdout } = await execAsync(
-      `yt-dlp --no-check-certificate --remote-components ejs:github --get-url -f "${format}" "${url}"`
+      `yt-dlp ${baseOptions} --get-url -f "${format}" "${url}"`
     );
     
     const urls = stdout.trim().split('\n').filter(url => url.length > 0);
@@ -275,7 +300,23 @@ export class YoutubeDownloadService {
    * @private
    */
   private buildProgressCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
-    const baseOptions = '--no-check-certificate --remote-components ejs:github --progress --newline';
+    // Enhanced options to avoid bot detection with progress output
+    const baseOptions = [
+      '--no-check-certificate',
+      '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"',
+      '--referer "https://www.youtube.com/"',
+      '--add-header "Accept-Language:en-US,en;q=0.9"',
+      '--add-header "Accept-Encoding:gzip, deflate, br"',
+      '--add-header "DNT:1"',
+      '--add-header "Connection:keep-alive"',
+      '--add-header "Upgrade-Insecure-Requests:1"',
+      '--extractor-retries 3',
+      '--fragment-retries 3',
+      '--retry-sleep 1',
+      '--progress',
+      '--newline',
+      '--no-warnings'
+    ].join(' ');
     
     if (audioOnly) {
       return `yt-dlp ${baseOptions} -f "bestaudio" --extract-audio --audio-format mp3 --audio-quality 0 -o "${tempFile}.%(ext)s" "${url}"`;
