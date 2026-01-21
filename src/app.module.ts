@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { YoutubeDownloadModule } from './features/youtube-download/youtube-download.module';
+import { HealthController } from './health/health.controller';
 
 /**
  * Root application module that imports all feature modules
@@ -22,7 +23,7 @@ import { YoutubeDownloadModule } from './features/youtube-download/youtube-downl
     // FacebookDownloadModule,
     // InstagramDownloadModule,
   ],
-  controllers: [],
+  controllers: [HealthController],
   providers: [],
 })
 export class AppModule {}

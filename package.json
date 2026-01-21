@@ -15,7 +15,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "postinstall": "npm run build"
   },
   "keywords": [
     "nestjs",
@@ -39,9 +40,7 @@
     "cors": "^2.8.5",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
-    "uuid": "^13.0.0",
-    "youtube-dl-exec": "^3.0.29",
-    "yt-dlp-wrap": "^2.3.12"
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.16",
