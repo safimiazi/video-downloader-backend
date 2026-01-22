@@ -144,21 +144,30 @@ export class YoutubeDownloadService {
    * @private
    */
   private buildDownloadCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
-    // Enhanced options to avoid bot detection with multiple fallback strategies
+    // Advanced anti-detection options with cookie simulation
     const baseOptions = [
       '--no-check-certificate',
       '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"',
       '--referer "https://www.youtube.com/"',
+      '--add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"',
       '--add-header "Accept-Language:en-US,en;q=0.9"',
       '--add-header "Accept-Encoding:gzip, deflate, br"',
       '--add-header "DNT:1"',
       '--add-header "Connection:keep-alive"',
       '--add-header "Upgrade-Insecure-Requests:1"',
-      '--extractor-retries 5',
-      '--fragment-retries 5',
-      '--retry-sleep 2',
-      '--socket-timeout 30',
-      '--extractor-args "youtube:player_client=web,mweb"',
+      '--add-header "Sec-Fetch-Dest:document"',
+      '--add-header "Sec-Fetch-Mode:navigate"',
+      '--add-header "Sec-Fetch-Site:none"',
+      '--add-header "Sec-Fetch-User:?1"',
+      '--add-header "Cache-Control:max-age=0"',
+      '--extractor-retries 10',
+      '--fragment-retries 10',
+      '--retry-sleep 3',
+      '--socket-timeout 60',
+      '--sleep-interval 1',
+      '--max-sleep-interval 5',
+      '--extractor-args "youtube:player_client=web,mweb,android,ios;comment_sort=top;max_comments=0"',
+      '--geo-bypass',
       '--no-warnings'
     ].join(' ');
     
@@ -181,16 +190,24 @@ export class YoutubeDownloadService {
       ? 'bestaudio/best' 
       : `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]`;
 
-    // Enhanced options for fallback URL extraction with multiple strategies
+    // Enhanced options for fallback URL extraction with comprehensive anti-detection
     const baseOptions = [
       '--no-check-certificate',
       '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"',
       '--referer "https://www.youtube.com/"',
+      '--add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"',
       '--add-header "Accept-Language:en-US,en;q=0.9"',
-      '--extractor-retries 5',
-      '--retry-sleep 2',
-      '--socket-timeout 30',
-      '--extractor-args "youtube:player_client=web,mweb"',
+      '--add-header "Sec-Fetch-Dest:document"',
+      '--add-header "Sec-Fetch-Mode:navigate"',
+      '--add-header "Sec-Fetch-Site:none"',
+      '--add-header "Sec-Fetch-User:?1"',
+      '--extractor-retries 10',
+      '--retry-sleep 3',
+      '--socket-timeout 60',
+      '--sleep-interval 2',
+      '--max-sleep-interval 8',
+      '--extractor-args "youtube:player_client=web,mweb,android,ios;comment_sort=top;max_comments=0"',
+      '--geo-bypass',
       '--no-warnings'
     ].join(' ');
 
@@ -209,30 +226,7 @@ export class YoutubeDownloadService {
         instruction: audioOnly ? 'Audio URL' : 'Video URLs (may need merging)'
       };
     } catch (fallbackError) {
-      // If primary method fails, try with different player client
-      try {
-        const alternativeOptions = [
-          '--no-check-certificate',
-          '--extractor-args "youtube:player_client=android"',
-          '--no-warnings'
-        ].join(' ');
-
-        const { stdout } = await execAsync(
-          `yt-dlp ${alternativeOptions} --get-url -f "${format}" "${url}"`
-        );
-        
-        const urls = stdout.trim().split('\n').filter(url => url.length > 0);
-
-        return {
-          success: true,
-          directDownload: false,
-          urls: urls,
-          message: 'Fallback URLs extracted using alternative method',
-          instruction: audioOnly ? 'Audio URL (Android client)' : 'Video URLs (Android client)'
-        };
-      } catch (secondaryError) {
-        throw new Error(`All fallback methods failed: ${fallbackError.message}`);
-      }
+      throw new Error(`URL extraction failed: ${fallbackError.message}`);
     }
   }
 
@@ -252,8 +246,77 @@ export class YoutubeDownloadService {
     const uniqueId = uuidv4().substring(0, 8);
     const tempFile = join(tmpdir(), `video_${timestamp}_${uniqueId}`);
     
-    // Try primary method first
-    this.attemptProgressiveDownload(controller, encoder, url, quality, audioOnly, tempFile, 'primary');
+    // Use single robust method with comprehensive anti-detection
+    const command = this.buildProgressCommand(url, quality, audioOnly, tempFile);
+    
+    this.logger.log(`Starting progressive download: ${command}`);
+
+    const child = exec(command, { timeout: 300000 }); // 5 minutes timeout
+    let controllerClosed = false;
+
+    // Helper function to safely send progress updates
+    const safeEnqueue = (data: ProgressUpdateDto) => {
+      if (!controllerClosed) {
+        try {
+          const sseData = `data: ${JSON.stringify(data)}\n\n`;
+          controller.enqueue(encoder.encode(sseData));
+        } catch (error) {
+          this.logger.warn('Controller already closed, ignoring progress update');
+          controllerClosed = true;
+        }
+      }
+    };
+
+    // Send initial progress update
+    safeEnqueue({
+      type: 'start',
+      message: 'Starting download with enhanced anti-detection...',
+      progress: 0
+    });
+
+    // Handle stdout for progress parsing
+    child.stdout?.on('data', (data) => {
+      const output = data.toString();
+      this.parseProgressOutput(output, safeEnqueue);
+    });
+
+    // Handle stderr for error detection
+    child.stderr?.on('data', (data) => {
+      const errorOutput = data.toString();
+      this.logger.warn(`yt-dlp stderr: ${errorOutput}`);
+      
+      // Only send error if it's a critical error
+      if (errorOutput.toLowerCase().includes('error') && !errorOutput.includes('warning')) {
+        safeEnqueue({
+          type: 'error',
+          message: `Download error: ${errorOutput.substring(0, 100)}`
+        });
+      }
+    });
+
+    // Handle process completion
+    child.on('close', async (code) => {
+      await this.handleProgressComplete(code, tempFile, audioOnly, url, quality, safeEnqueue, controller);
+      controllerClosed = true;
+    });
+
+    // Handle process errors
+    child.on('error', (processError) => {
+      this.logger.error(`Process error: ${processError.message}`);
+      safeEnqueue({
+        type: 'error',
+        message: `Process failed: ${processError.message}`
+      });
+      
+      if (!controllerClosed) {
+        try {
+          controller.close();
+          controllerClosed = true;
+        } catch (closeError) {
+          this.logger.warn('Controller already closed during error handling');
+        }
+      }
+    });
   }
 
   /**
@@ -449,21 +512,30 @@ export class YoutubeDownloadService {
    * @private
    */
   private buildProgressCommand(url: string, quality: string, audioOnly: boolean, tempFile: string): string {
-    // Enhanced options to avoid bot detection with progress output and multiple fallback strategies
+    // Advanced anti-detection options with progress output and comprehensive headers
     const baseOptions = [
       '--no-check-certificate',
       '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"',
       '--referer "https://www.youtube.com/"',
+      '--add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"',
       '--add-header "Accept-Language:en-US,en;q=0.9"',
       '--add-header "Accept-Encoding:gzip, deflate, br"',
       '--add-header "DNT:1"',
       '--add-header "Connection:keep-alive"',
       '--add-header "Upgrade-Insecure-Requests:1"',
-      '--extractor-retries 5',
-      '--fragment-retries 5',
-      '--retry-sleep 2',
-      '--socket-timeout 30',
-      '--extractor-args "youtube:player_client=web,mweb"',
+      '--add-header "Sec-Fetch-Dest:document"',
+      '--add-header "Sec-Fetch-Mode:navigate"',
+      '--add-header "Sec-Fetch-Site:none"',
+      '--add-header "Sec-Fetch-User:?1"',
+      '--add-header "Cache-Control:max-age=0"',
+      '--extractor-retries 10',
+      '--fragment-retries 10',
+      '--retry-sleep 3',
+      '--socket-timeout 60',
+      '--sleep-interval 1',
+      '--max-sleep-interval 5',
+      '--extractor-args "youtube:player_client=web,mweb,android,ios;comment_sort=top;max_comments=0"',
+      '--geo-bypass',
       '--progress',
       '--newline',
       '--no-warnings'
